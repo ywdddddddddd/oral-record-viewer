@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import type { UploadedFile } from '../types'
-import { ocrImage, ocrPdf, extractPdfPreviewImage, isImageFile, isPdfFile } from '../services/ocr'
+import { ocrFile, isSupportedFile } from '../services/ocr'
 
 interface Props {
   files: UploadedFile[]
@@ -16,20 +16,15 @@ export default function FileUploader({ files, onFilesChange }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const processFile = useCallback(async (file: File) => {
+    if (!isSupportedFile(file)) return
+
     const id = genId()
-    const isPdf = isPdfFile(file)
-    const isImg = isImageFile(file)
-    if (!isPdf && !isImg) return
+    const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf')
+    const isImg = file.type.startsWith('image/')
 
     let previewUrl = ''
     if (isImg) {
       previewUrl = URL.createObjectURL(file)
-    } else if (isPdf) {
-      try {
-        previewUrl = await extractPdfPreviewImage(file)
-      } catch {
-        previewUrl = ''
-      }
     }
 
     const newFile: UploadedFile = {
@@ -39,23 +34,40 @@ export default function FileUploader({ files, onFilesChange }: Props) {
       previewUrl,
       ocrText: '',
       ocrStatus: 'processing',
-      ocrProgress: 10,
+      ocrProgress: 5,
     }
 
     onFilesChange((prev) => [...prev, newFile])
 
     try {
-      const text = isPdf ? await ocrPdf(file) : await ocrImage(file)
+      const text = await ocrFile(file, (msg, pct) => {
+        onFilesChange((prev) =>
+          prev.map((f) =>
+            f.id === id
+              ? { ...f, ocrStatus: 'processing' as const, ocrProgress: pct, ocrText: msg }
+              : f
+          )
+        )
+      })
 
       onFilesChange((prev) =>
         prev.map((f) =>
-          f.id === id ? { ...f, ocrText: text, ocrStatus: 'done' as const, ocrProgress: 100 } : f
+          f.id === id
+            ? { ...f, ocrText: text, ocrStatus: 'done' as const, ocrProgress: 100 }
+            : f
         )
       )
-    } catch {
+    } catch (e) {
       onFilesChange((prev) =>
         prev.map((f) =>
-          f.id === id ? { ...f, ocrStatus: 'error' as const, ocrProgress: 0 } : f
+          f.id === id
+            ? {
+                ...f,
+                ocrText: e instanceof Error ? e.message : '识别失败',
+                ocrStatus: 'error' as const,
+                ocrProgress: 0,
+              }
+            : f
         )
       )
     }
@@ -81,7 +93,7 @@ export default function FileUploader({ files, onFilesChange }: Props) {
 
   function removeFile(id: string) {
     const f = files.find((x) => x.id === id)
-    if (f?.previewUrl && isImageFile(f.file)) URL.revokeObjectURL(f.previewUrl)
+    if (f?.previewUrl) URL.revokeObjectURL(f.previewUrl)
     onFilesChange(files.filter((x) => x.id !== id))
   }
 
@@ -90,6 +102,11 @@ export default function FileUploader({ files, onFilesChange }: Props) {
     .filter((f) => f.ocrStatus === 'done')
     .map((f) => f.ocrText)
     .join('\n---\n')
+
+  const FILE_ICON: Record<string, string> = {
+    pdf: '📄',
+    image: '🖼️',
+  }
 
   return (
     <div>
@@ -105,7 +122,7 @@ export default function FileUploader({ files, onFilesChange }: Props) {
           ref={fileRef}
           type="file"
           className="hidden"
-          accept="image/*,.pdf"
+          accept="image/*,.pdf,.doc,.docx,.ppt,.pptx"
           multiple
           onChange={handleFileSelect}
         />
@@ -113,7 +130,9 @@ export default function FileUploader({ files, onFilesChange }: Props) {
         <p className="text-sm font-medium text-slate-600">
           {dragOver ? '松开以上传文件' : '拖放文件到此处，或点击上传'}
         </p>
-        <p className="text-xs text-slate-400 mt-1">支持 PDF、PNG、JPG</p>
+        <p className="text-xs text-slate-400 mt-1">
+          支持 PDF、图片（PNG/JPG）、Word、PPT — MinerU 精准解析
+        </p>
       </div>
 
       {files.length > 0 && (
@@ -131,7 +150,7 @@ export default function FileUploader({ files, onFilesChange }: Props) {
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <span className="text-2xl">{f.type === 'pdf' ? '📄' : '🖼️'}</span>
+                  <span className="text-2xl">{FILE_ICON[f.type] ?? '📎'}</span>
                 )}
               </div>
               <div className="flex-1 min-w-0">
@@ -147,10 +166,7 @@ export default function FileUploader({ files, onFilesChange }: Props) {
                 <p className="text-xs text-slate-400 mb-2">
                   {(f.file.size / 1024).toFixed(0)} KB
                 </p>
-                <div className="flex items-center gap-2">
-                  {f.ocrStatus === 'pending' && (
-                    <span className="text-xs text-slate-400">等待识别…</span>
-                  )}
+                <div className="flex items-center gap-2 min-w-0">
                   {f.ocrStatus === 'processing' && (
                     <>
                       <div className="h-1.5 flex-1 bg-slate-200 rounded-full overflow-hidden max-w-[120px]">
@@ -159,7 +175,9 @@ export default function FileUploader({ files, onFilesChange }: Props) {
                           style={{ width: `${f.ocrProgress}%` }}
                         />
                       </div>
-                      <span className="text-xs text-blue-500">识别中…</span>
+                      <span className="text-xs text-blue-500 truncate">
+                        {f.ocrText || '识别中…'}
+                      </span>
                     </>
                   )}
                   {f.ocrStatus === 'done' && (
@@ -168,7 +186,7 @@ export default function FileUploader({ files, onFilesChange }: Props) {
                     </span>
                   )}
                   {f.ocrStatus === 'error' && (
-                    <span className="text-xs text-red-500">识别失败</span>
+                    <span className="text-xs text-red-500 truncate">{f.ocrText || '识别失败'}</span>
                   )}
                 </div>
                 {f.ocrStatus === 'done' && f.ocrText && (
@@ -197,11 +215,9 @@ export default function FileUploader({ files, onFilesChange }: Props) {
 
       {allDone && (
         <div className="mt-3 text-xs text-slate-400">
-          文字可能有 OCR 识别误差，建议检查后提交
+          由 MinerU vlm 模型精准解析
         </div>
       )}
     </div>
   )
 }
-
-export type { UploadedFile }
