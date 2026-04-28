@@ -5,4 +5,13 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   base: '/oral-record-viewer/',
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      '/api/mineru': {
+        target: 'https://mineru.net',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/mineru/, ''),
+      },
+    },
+  },
 })

@@ -1,5 +1,22 @@
-const BASE = 'https://mineru.net/api/v4'
 const TOKEN = import.meta.env.VITE_MINERU_API_KEY
+
+function baseUrl(): string {
+  if (import.meta.env.DEV) return '/api/mineru'
+  return 'https://mineru.net'
+}
+
+async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${baseUrl()}${path}`, init)
+  } catch (e) {
+    if (!import.meta.env.DEV) {
+      throw new Error(
+        '生产环境 CORS 限制，无法直接调用 MinerU。请在本地运行 npm run dev 使用开发代理。'
+      )
+    }
+    throw e
+  }
+}
 
 interface UploadResponse {
   code: number
@@ -25,7 +42,7 @@ interface BatchResult {
 }
 
 async function getUploadUrl(filename: string): Promise<{ batchId: string; uploadUrl: string }> {
-  const res = await fetch(`${BASE}/file-urls/batch`, {
+  const res = await mineruFetch('/api/v4/file-urls/batch', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -37,6 +54,7 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
       language: 'ch',
     }),
   })
+  if (!res.ok) throw new Error(`MinerU 上传请求失败: HTTP ${res.status}`)
   const data: UploadResponse = await res.json()
   if (data.code !== 0) throw new Error(`MinerU: ${data.msg}`)
   return { batchId: data.data.batch_id, uploadUrl: data.data.file_urls[0] }
@@ -47,7 +65,7 @@ async function uploadToSignedUrl(url: string, file: File): Promise<void> {
     method: 'PUT',
     body: file,
   })
-  if (res.status !== 200) throw new Error(`Upload failed: HTTP ${res.status}`)
+  if (res.status !== 200) throw new Error(`文件上传失败: HTTP ${res.status}`)
 }
 
 async function pollBatchResult(
@@ -57,11 +75,12 @@ async function pollBatchResult(
   for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 3000))
 
-    const res = await fetch(`${BASE}/extract-results/batch/${batchId}`, {
+    const res = await mineruFetch(`/api/v4/extract-results/batch/${batchId}`, {
       headers: { Authorization: `Bearer ${TOKEN}` },
     })
-    const data: BatchResult = await res.json()
+    if (!res.ok) throw new Error(`MinerU 查询失败: HTTP ${res.status}`)
 
+    const data: BatchResult = await res.json()
     if (data.code !== 0) throw new Error(`MinerU: ${data.msg}`)
 
     const result = data.data.extract_result[0]
@@ -72,7 +91,6 @@ async function pollBatchResult(
       const mdUrl = result.full_zip_url.replace('.zip', '/full.md')
       const mdRes = await fetch(mdUrl)
       if (mdRes.ok) return await mdRes.text()
-      // Fallback: try to get from zip
       const zipRes = await fetch(result.full_zip_url)
       if (zipRes.ok) {
         const blob = await zipRes.blob()
@@ -87,7 +105,7 @@ async function pollBatchResult(
 
     onProgress?.(`解析中…（${result.state}）`)
   }
-  throw new Error('MinerU 解析超时')
+  throw new Error('MinerU 解析超时（3分钟），请重试')
 }
 
 async function extractMdFromZip(blob: Blob): Promise<string> {
@@ -95,7 +113,6 @@ async function extractMdFromZip(blob: Blob): Promise<string> {
   const zip = await JSZip.loadAsync(blob)
   const mdFile = zip.file('full.md')
   if (mdFile) return await mdFile.async('string')
-  // Try any .md file
   for (const [name, file] of Object.entries(zip.files)) {
     if (name.endsWith('.md') && !file.dir) return await file.async('string')
   }
