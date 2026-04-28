@@ -1,13 +1,20 @@
 const TOKEN = import.meta.env.VITE_MINERU_API_KEY
 
 function baseUrl(): string {
-  if (import.meta.env.DEV) return '/api/mineru'
+  if (import.meta.env.DEV) return window.location.pathname.replace(/\/$/, '') + '/api/mineru'
   return 'https://mineru.net'
+}
+
+function authHeaders(): Record<string, string> {
+  if (import.meta.env.DEV) return {}
+  return { Authorization: `Bearer ${TOKEN}` }
 }
 
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${baseUrl()}${path}`, init)
+    const url = `${baseUrl()}${path}`
+    const headers = { ...authHeaders(), ...init?.headers as Record<string, string> }
+    return await fetch(url, { ...init, headers })
   } catch (e) {
     if (!import.meta.env.DEV) {
       throw new Error(
@@ -44,10 +51,7 @@ interface BatchResult {
 async function getUploadUrl(filename: string): Promise<{ batchId: string; uploadUrl: string }> {
   const res = await mineruFetch('/api/v4/file-urls/batch', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       files: [{ name: filename, is_ocr: true }],
       model_version: 'vlm',
@@ -75,9 +79,7 @@ async function pollBatchResult(
   for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 3000))
 
-    const res = await mineruFetch(`/api/v4/extract-results/batch/${batchId}`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-    })
+    const res = await mineruFetch(`/api/v4/extract-results/batch/${batchId}`)
     if (!res.ok) throw new Error(`MinerU 查询失败: HTTP ${res.status}`)
 
     const data: BatchResult = await res.json()
