@@ -111,20 +111,24 @@ ${text.slice(0, 5000)}`
 }
 
 export async function analyzeCase(text: string): Promise<AnalysisResult> {
-  const response = await chat([
-    {
-      role: 'system',
-      content:
-        '你是一位资深口腔医疗质量管理专家，严格按照《病历书写基本规范》对口腔病历进行逐项审核。评分要客观、有依据，缺失项要具体指出。必须严格输出JSON格式。',
-    },
-    { role: 'user', content: buildAuditPrompt(text) },
-  ])
+  const response = await chat(
+    [
+      {
+        role: 'system',
+        content:
+          '你是一位资深口腔医疗质量管理专家，严格按照《病历书写基本规范》对口腔病历进行逐项审核。评分要客观、有依据，缺失项要具体指出。必须严格输出JSON格式。',
+      },
+      { role: 'user', content: buildAuditPrompt(text) },
+    ],
+    { maxTokens: 8192 }
+  )
 
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error('No JSON')
+    if (!jsonMatch) throw new Error(`No JSON in response: ${response.slice(0, 200)}`)
     return JSON.parse(jsonMatch[0])
-  } catch {
+  } catch (e) {
+    console.error('[analyzer] parse error:', e instanceof Error ? e.message : String(e), 'response:', response.slice(0, 300))
     return {
       totalScore: 0,
       completeness: { score: 0, missing: [], issues: ['AI 分析失败，请重试'] },

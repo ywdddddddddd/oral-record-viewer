@@ -12,12 +12,12 @@ const client = new OpenAI({
   dangerouslyAllowBrowser: true,
 })
 
-export async function chat(messages: { role: 'system' | 'user'; content: string }[]): Promise<string> {
+export async function chat(messages: { role: 'system' | 'user'; content: string }[], opts?: { maxTokens?: number }): Promise<string> {
   const completion = await client.chat.completions.create({
     model: 'deepseek-v4-flash',
     messages,
     stream: false,
-    max_tokens: 4096,
+    max_tokens: opts?.maxTokens ?? 4096,
     temperature: 0.3,
   })
   return completion.choices[0].message.content ?? ''
