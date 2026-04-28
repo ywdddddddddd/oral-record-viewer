@@ -62,7 +62,15 @@ export interface StoredCase {
 
 export type DoctorMode = 'education' | 'analysis'
 
+export interface SectionAudit {
+  section: string
+  status: 'present' | 'partial' | 'missing'
+  score: number
+  issues: string[]
+}
+
 export interface AnalysisResult {
+  totalScore: number
   completeness: {
     score: number
     missing: string[]
@@ -75,8 +83,11 @@ export interface AnalysisResult {
   riskAssessment: {
     hasAllergyRecord: boolean
     hasSystemicDisease: boolean
+    hasInfoboxConsent: boolean
+    hasFollowupPlan: boolean
     warnings: string[]
   }
+  sections: SectionAudit[]
   followupScript: string
   summary: string
 }
