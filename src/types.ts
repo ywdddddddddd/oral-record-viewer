@@ -59,3 +59,34 @@ export interface StoredCase {
   completedAt: number | null
   patientAnswers: number[] | null
 }
+
+export type DoctorMode = 'education' | 'analysis'
+
+export interface AnalysisResult {
+  completeness: {
+    score: number
+    missing: string[]
+    issues: string[]
+  }
+  compliance: {
+    score: number
+    issues: string[]
+  }
+  riskAssessment: {
+    hasAllergyRecord: boolean
+    hasSystemicDisease: boolean
+    warnings: string[]
+  }
+  followupScript: string
+  summary: string
+}
+
+export interface UploadedFile {
+  id: string
+  file: File
+  type: 'image' | 'pdf'
+  previewUrl: string
+  ocrText: string
+  ocrStatus: 'pending' | 'processing' | 'done' | 'error'
+  ocrProgress: number
+}
