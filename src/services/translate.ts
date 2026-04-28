@@ -13,10 +13,7 @@ function buildTranslatePrompt(record: CaseRecord): string {
 3. 输出格式必须是严格的 JSON，结构如下：
 {
   "sections": [
-    {
-      "title": "章节标题",
-      "plainContent": "通俗化后的内容"
-    }
+    { "title": "章节标题", "plainContent": "通俗化后的内容" }
   ]
 }
 
@@ -26,23 +23,18 @@ ${sectionsText}`
 
 export async function translateRecord(record: CaseRecord): Promise<PlainSection[]> {
   const prompt = buildTranslatePrompt(record)
-
   const response = await chat([
     {
       role: 'system',
       content:
-        '你是一位专业的口腔医疗信息通俗化专家。你的任务是把专业病历转成患者能读懂的内容。必须严格输出JSON格式，不要输出任何JSON之外的内容。',
+        '你是一位专业的口腔医疗信息通俗化专家。你的任务是把专业病历转成患者能读懂的内容。必须严格输出JSON格式。',
     },
-    {
-      role: 'user',
-      content: prompt,
-    },
+    { role: 'user', content: prompt },
   ])
 
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('No JSON in response')
-
     const parsed = JSON.parse(jsonMatch[0])
     return parsed.sections.map(
       (s: { title: string; plainContent: string }, i: number) => ({
@@ -64,6 +56,70 @@ export async function translateRecord(record: CaseRecord): Promise<PlainSection[
   }
 }
 
+export async function translateFreeText(
+  text: string
+): Promise<{ title: string; sections: PlainSection[] }> {
+  const prompt = `请将以下口腔医学专业文本转换为患者能读懂的通俗报告。
+
+要求：
+1. 分析文本内容，提取关键信息
+2. 用通俗语言重新表达，保留所有医学要点
+3. 将内容分为几个核心章节（如：您的情况、我们做了什么、您需要做什么、注意事项等）
+4. 对专业术语给出生活化的解释
+5. 输出格式必须是严格的 JSON：
+{
+  "title": "简短标题（10字以内）",
+  "sections": [
+    { "title": "章节标题", "plainContent": "通俗化后的内容" }
+  ]
+}
+
+原文：
+${text.slice(0, 3000)}`
+
+  const response = await chat([
+    {
+      role: 'system',
+      content:
+        '你是一位专业口腔医疗信息通俗化专家。将专业病历转为患者易懂内容。必须严格输出JSON格式，章节标题要贴近患者视角（如"您的情况""治疗过程""回家后注意"）。',
+    },
+    { role: 'user', content: prompt },
+  ])
+
+  try {
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error('No JSON')
+    const parsed = JSON.parse(jsonMatch[0])
+    return {
+      title: parsed.title ?? '口腔健康报告',
+      sections: (parsed.sections ?? []).map(
+        (s: { title: string; plainContent: string }, i: number) => ({
+          id: `sec-free-${i}`,
+          title: s.title,
+          plainContent: s.plainContent,
+          originalContent: text.slice(0, 500),
+          isMarked: false,
+        })
+      ),
+    }
+  } catch {
+    return {
+      title: '口腔健康报告',
+      sections: [
+        {
+          id: 'sec-fallback',
+          title: '通俗报告',
+          plainContent:
+            '[AI 转换失败]\n\n我们无法自动转换您的病历，以下是原文内容，请咨询您的医生。\n\n' +
+            text.slice(0, 1000),
+          originalContent: text,
+          isMarked: false,
+        },
+      ],
+    }
+  }
+}
+
 export async function reExplainSection(section: PlainSection): Promise<string> {
   const response = await chat([
     {
@@ -73,9 +129,8 @@ export async function reExplainSection(section: PlainSection): Promise<string> {
     },
     {
       role: 'user',
-      content: `患者看不懂这段话（这是已经通俗化过的版本，但还不够简单）：\n\n【${section.title}】\n${section.plainContent}\n\n附原文：\n${section.originalContent}\n\n请用更简单的话重新解释：`,
+      content: `患者看不懂这段话（这是已经通俗化过的版本，但还不够简单）：\n\n【${section.title}】\n${section.plainContent}\n\n请用更简单的话重新解释：`,
     },
   ])
-
   return response.slice(0, 500)
 }

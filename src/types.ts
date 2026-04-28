@@ -45,3 +45,17 @@ export interface LoopState {
   maxAttempts: number
   isClosed: boolean
 }
+
+export type CaseStatus = 'processing' | 'ready' | 'sent' | 'completed'
+
+export interface StoredCase {
+  id: string
+  title: string
+  originalContent: string
+  plainSections: PlainSection[]
+  questions: Question[]
+  status: CaseStatus
+  createdAt: number
+  completedAt: number | null
+  patientAnswers: number[] | null
+}

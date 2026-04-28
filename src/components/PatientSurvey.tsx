@@ -6,9 +6,10 @@ interface Props {
   questionsLoading: boolean
   onReloadQuestions: () => void
   onAllPassed: () => void
+  onComplete?: (answers: number[]) => void
 }
 
-export default function PatientSurvey({ questions, questionsLoading, onReloadQuestions, onAllPassed }: Props) {
+export default function PatientSurvey({ questions, questionsLoading, onReloadQuestions, onAllPassed, onComplete }: Props) {
   const [answers, setAnswers] = useState<number[]>([])
   const [submitted, setSubmitted] = useState(false)
 
@@ -28,6 +29,12 @@ export default function PatientSurvey({ questions, questionsLoading, onReloadQue
 
   const allCorrect = submitted && results.every((r) => r.isCorrect)
   const wrongCount = submitted ? results.filter((r) => !r.isCorrect).length : 0
+
+  useEffect(() => {
+    if (submitted && allCorrect && onComplete) {
+      onComplete(answers)
+    }
+  }, [submitted, allCorrect])
 
   function handleAnswer(qIndex: number, optionIndex: number) {
     if (submitted) return
