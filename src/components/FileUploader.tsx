@@ -72,15 +72,19 @@ export default function FileUploader({ files, onFilesChange }: Props) {
         )
       )
     } catch (e) {
+      let msg = '识别失败'
+      if (e instanceof Error) {
+        if (e.name === 'AbortError' || e.message.includes('aborted')) {
+          msg = '上传超时，请检查网络后重试'
+        } else {
+          msg = e.message.slice(0, 200)
+        }
+      }
+      console.error('[upload] error:', msg, e)
       onFilesChange((prev) =>
         prev.map((f) =>
           f.id === id
-            ? {
-                ...f,
-                ocrText: e instanceof Error ? e.message : '识别失败',
-                ocrStatus: 'error' as const,
-                ocrProgress: 0,
-              }
+            ? { ...f, ocrText: msg, ocrStatus: 'error' as const, ocrProgress: 0 }
             : f
         )
       )

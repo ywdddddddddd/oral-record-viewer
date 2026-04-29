@@ -12,7 +12,8 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 async function uploadToSignedUrl(url: string, file: File): Promise<void> {
-  const timeoutMs = Math.max(60000, file.size / 1024 * 200) // ~200ms/KB, min 60s
+  // ~1 second per 100KB, min 30s, max 5 minutes
+  const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   const res = await fetchWithTimeout(baseUrl() + '/upload', {
     method: 'POST',
     headers: { 'x-upload-url': url },
