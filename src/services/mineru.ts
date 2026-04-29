@@ -5,14 +5,32 @@ function baseUrl(): string {
   return WORKER_URL
 }
 
-function authHeaders(): Record<string, string> {
-  return {}
+function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
+
+async function uploadToSignedUrl(url: string, file: File): Promise<void> {
+  const timeoutMs = Math.max(60000, file.size / 1024 * 200) // ~200ms/KB, min 60s
+  const res = await fetchWithTimeout(baseUrl() + '/upload', {
+    method: 'POST',
+    headers: { 'x-upload-url': url },
+    body: file,
+  }, timeoutMs)
+  if (res.status !== 200) {
+    const text = await res.text().catch(() => '')
+    if (text) {
+      try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
+    }
+    throw new Error(`文件上传失败: HTTP ${res.status}`)
+  }
 }
 
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
   try {
     const url = `${baseUrl()}${path}`
-    const headers = { ...authHeaders(), ...(init?.headers as Record<string, string>) }
+    const headers = { ...(init?.headers as Record<string, string>) }
     console.log('[mineru] fetch:', url, init?.method ?? 'GET')
     const resp = await fetch(url, { ...init, headers })
     if (!resp.ok) {
@@ -47,21 +65,6 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
   const data: UploadResponse = await res.json()
   if (data.code !== 0) throw new Error(`MinerU: ${data.msg}`)
   return { batchId: data.data.batch_id, uploadUrl: data.data.file_urls[0] }
-}
-
-async function uploadToSignedUrl(url: string, file: File): Promise<void> {
-  if (import.meta.env.DEV || import.meta.env.PROD) {
-    const res = await fetch(baseUrl() + '/upload', {
-      method: 'POST',
-      headers: { 'x-upload-url': url },
-      body: file,
-    })
-    if (res.status !== 200) {
-      const err = await res.text().catch(() => '')
-      throw new Error(`文件上传失败: HTTP ${res.status} ${err}`)
-    }
-    return
-  }
 }
 
 async function proxyDownload(url: string): Promise<string> {

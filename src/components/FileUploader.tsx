@@ -18,6 +18,20 @@ export default function FileUploader({ files, onFilesChange }: Props) {
   const processFile = useCallback(async (file: File) => {
     if (!isSupportedFile(file)) return
 
+    if (file.size > 200 * 1024 * 1024) {
+      const newFile: UploadedFile = {
+        id: genId(),
+        file,
+        type: file.type === 'application/pdf' ? 'pdf' : 'image',
+        previewUrl: '',
+        ocrText: '文件超过 200MB，MinerU API 限制',
+        ocrStatus: 'error',
+        ocrProgress: 0,
+      }
+      onFilesChange((prev) => [...prev, newFile])
+      return
+    }
+
     const id = genId()
     const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf')
     const isImg = file.type.startsWith('image/')
