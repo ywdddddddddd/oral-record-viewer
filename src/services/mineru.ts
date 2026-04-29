@@ -12,8 +12,17 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 async function uploadToSignedUrl(url: string, file: File): Promise<void> {
-  // ~1 second per 100KB, min 30s, max 5 minutes
   const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
+  
+  // Try direct PUT to OSS first (faster, no Worker hop)
+  try {
+    const direct = await fetchWithTimeout(url, { method: 'PUT', body: file }, timeoutMs)
+    if (direct.status === 200) return
+  } catch {
+    // CORS or network error, fall through to Worker proxy
+  }
+  
+  // Fallback: upload through Worker proxy
   const res = await fetchWithTimeout(baseUrl() + '/upload', {
     method: 'POST',
     headers: { 'x-upload-url': url },
@@ -24,7 +33,7 @@ async function uploadToSignedUrl(url: string, file: File): Promise<void> {
     if (text) {
       try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
     }
-    throw new Error(`文件上传失败: HTTP ${res.status}`)
+    throw new Error(`上传失败: HTTP ${res.status}`)
   }
 }
 
