@@ -61,23 +61,24 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
 async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
   const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   
-  // Try direct OSS PUT first (fastest, no proxy size limit)
-  try {
-    const direct = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
-    if (direct.status === 200) return
-  } catch { /* fallback to proxy */ }
+  // Attempt 1: direct OSS PUT
+  try { const r = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs); if (r.status === 200) return } catch {}
   
-  // Proxy fallback with cloned body
-  const clone = file.slice(0, file.size, file.type)
+  // Attempt 2: corsproxy.io + OSS (works on same proxy that API calls use)
+  const clone1 = file.slice(0, file.size, file.type)
+  try { const r = await fetchWithTimeout(CORS_PROXY(ossUrl), { method: 'PUT', body: clone1 }, timeoutMs); if (r.status === 200) return } catch {}
+  
+  // Attempt 3: Worker/Vercel proxy
+  const clone2 = file.slice(0, file.size, file.type)
   const base = proxyBase()
-  const res = await fetchWithTimeout(base + '/upload', {
-    method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone,
+  const r = await fetchWithTimeout(base + '/upload', {
+    method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone2,
   }, timeoutMs)
-  if (res.status !== 200) {
-    const text = await res.text().catch(() => '')
-    try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
-    throw new Error(`上传失败: HTTP ${res.status}`)
-  }
+  if (r.status === 200) return
+  
+  const text = await r.text().catch(() => '')
+  try { const j = JSON.parse(text); throw new Error(j.msg || `HTTP ${r.status}`) } catch {}
+  throw new Error(`上传失败: HTTP ${r.status}`)
 }
 
 async function downloadFile(url: string): Promise<Response> {
