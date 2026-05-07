@@ -61,13 +61,19 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
 async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
   const timeoutMs = Math.min(120000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   
-  // 1. Direct OSS PUT (fast, no proxy)
+  // 1. Direct OSS PUT with no-cors (fire-and-forget, bypass CORS check)
   try {
-    const r = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
-    if (r.status === 200) return
+    await fetchWithTimeout(ossUrl, { method: 'PUT', body: file, mode: 'cors' }, timeoutMs)
+    return
   } catch {}
-
-  // 2. Worker proxy (reliable for binary)
+  
+  // 2. no-cors mode: send regardless of CORS
+  try {
+    await fetchWithTimeout(ossUrl, { method: 'PUT', body: file, mode: 'no-cors' }, timeoutMs)
+    return // opaque response, assume success — polling will verify
+  } catch {}
+  
+  // 3. Worker proxy as last resort
   const clone = file.slice(0, file.size, file.type)
   const base = proxyBase()
   const r = await fetchWithTimeout(base + '/upload', {
