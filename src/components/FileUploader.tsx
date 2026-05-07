@@ -1,6 +1,10 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useMemo } from 'react'
 import type { UploadedFile } from '../types'
 import { ocrFile, isSupportedFile } from '../services/ocr'
+
+function isMobile(): boolean {
+  return /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent)
+}
 
 interface Props {
   files: UploadedFile[]
@@ -14,6 +18,7 @@ function genId(): string {
 export default function FileUploader({ files, onFilesChange }: Props) {
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const mobile = useMemo(() => isMobile(), [])
 
   const processFile = useCallback(async (file: File) => {
     if (!isSupportedFile(file)) return
@@ -128,6 +133,13 @@ export default function FileUploader({ files, onFilesChange }: Props) {
 
   return (
     <div>
+      {mobile && !import.meta.env.DEV && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-4 text-xs text-amber-700">
+          ⚠️ 手机端文件上传因网络限制可能失败。请在电脑浏览器访问，或连接同一 WiFi 后
+          在电脑运行 <code className="bg-amber-100 px-1 rounded">npm run dev</code>，
+          手机访问电脑 IP 地址使用本地代理上传。
+        </div>
+      )}
       <div
         className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer
           ${dragOver ? 'border-blue-400 bg-blue-50' : 'border-slate-300 hover:border-blue-300 hover:bg-slate-50'}`}
