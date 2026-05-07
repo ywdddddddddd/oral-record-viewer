@@ -61,40 +61,29 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
 async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
   const timeoutMs = Math.min(120000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   
-  async function tryDirect(): Promise<void> {
+  // 1. Direct OSS PUT (fast, no proxy)
+  try {
     const r = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
-    if (r.status !== 200) throw new Error(`OSS ${r.status}`)
+    if (r.status === 200) return
+  } catch {}
+
+  // 2. Worker proxy (reliable for binary)
+  const clone = file.slice(0, file.size, file.type)
+  const base = proxyBase()
+  const r = await fetchWithTimeout(base + '/upload', {
+    method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone,
+  }, timeoutMs)
+  if (r.status !== 200) {
+    const text = await r.text().catch(() => '')
+    try { const j = JSON.parse(text); throw new Error(j.msg || `HTTP ${r.status}`) } catch {}
+    throw new Error(`上传失败: HTTP ${r.status}`)
   }
-  
-  async function tryCorsProxy(): Promise<void> {
-    const clone = file.slice(0, file.size, file.type)
-    const r = await fetchWithTimeout(CORS_PROXY(ossUrl), { method: 'PUT', body: clone }, timeoutMs)
-    if (r.status !== 200) throw new Error(`proxy ${r.status}`)
-  }
-  
-  async function tryWorker(): Promise<void> {
-    const clone = file.slice(0, file.size, file.type)
-    const base = proxyBase()
-    const r = await fetchWithTimeout(base + '/upload', {
-      method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone,
-    }, timeoutMs)
-    if (r.status !== 200) {
-      const text = await r.text().catch(() => '')
-      const msg = text ? (() => { try { return JSON.parse(text).msg || text.slice(0, 100) } catch { return text.slice(0, 100) } })() : `HTTP ${r.status}`
-      throw new Error(msg)
-    }
-  }
-  
-  // Race: whichever completes first wins
-  const result = await Promise.any([tryDirect(), tryCorsProxy(), tryWorker()])
-  return result
 }
 
 async function downloadFile(url: string): Promise<Response> {
-  try {
-    const direct = await fetch(url)
-    if (direct.ok) return direct
-  } catch { }
+  // Try: direct → corsproxy → Worker proxy
+  try { const r = await fetch(url); if (r.ok) return r } catch {}
+  try { const r = await fetch(CORS_PROXY(url)); if (r.ok) return r } catch {}
   const base = proxyBase()
   return fetch(base + '/download', { headers: { 'x-download-url': url } })
 }
