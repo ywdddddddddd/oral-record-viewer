@@ -1,7 +1,7 @@
 const WORKER_URL = 'https://oral-mineru-proxy.oral-mineru.workers.dev'
 const MINERU_BASE = 'https://mineru.net'
 const TOKEN = import.meta.env.VITE_MINERU_API_KEY
-const CORS_PROXY = 'https://corsproxy.io/?' + encodeURIComponent
+const CORS_PROXY = (url: string) => 'https://corsproxy.io/?' + encodeURIComponent(url)
 
 function proxyBase(): string {
   if (import.meta.env.DEV) return window.location.pathname.replace(/\/$/, '') + '/api/mineru'
