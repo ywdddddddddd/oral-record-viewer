@@ -1,6 +1,7 @@
 const WORKER_URL = 'https://oral-mineru-proxy.oral-mineru.workers.dev'
 const MINERU_BASE = 'https://mineru.net'
 const TOKEN = import.meta.env.VITE_MINERU_API_KEY
+const CORS_PROXY = 'https://corsproxy.io/?' + encodeURIComponent
 
 function proxyBase(): string {
   if (import.meta.env.DEV) return window.location.pathname.replace(/\/$/, '') + '/api/mineru'
@@ -15,22 +16,28 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
-  // Same-origin proxy (Vite dev or Vercel): no CORS, no token needed
+  const url = MINERU_BASE + path
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) }
+  
+  // Same-origin proxy (dev/vercel): no fallback needed
   if (import.meta.env.DEV || window.location.hostname.includes('vercel.app')) {
     return fetch(proxyBase() + path, init)
   }
-  // GitHub Pages: try direct with token, fallback to Worker
-  try {
-    const direct = await fetch(MINERU_BASE + path, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) },
-    })
-    if (direct.ok) return direct
-  } catch { /* fallback to Worker */ }
-  return fetch(WORKER_URL + path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) },
-  })
+  
+  // GitHub Pages: try multiple paths
+  const attempts = [
+    () => fetch(url, { ...init, headers }),                      // 1. direct mineru.net
+    () => fetch(CORS_PROXY(url), { ...init, headers }),          // 2. corsproxy.io
+    () => fetch(WORKER_URL + path, { ...init, headers }),        // 3. Worker
+  ]
+  
+  for (const attempt of attempts) {
+    try {
+      const resp = await attempt()
+      if (resp.ok) return resp
+    } catch {}
+  }
+  throw new Error('无法连接 MinerU 服务，请检查网络后重试')
 }
 
 interface UploadResponse {
