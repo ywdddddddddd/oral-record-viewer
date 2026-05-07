@@ -1,8 +1,10 @@
 const WORKER_URL = 'https://oral-mineru-proxy.oral-mineru.workers.dev'
+const MINERU_BASE = 'https://mineru.net'
+const TOKEN = import.meta.env.VITE_MINERU_API_KEY
 
 function baseUrl(): string {
   if (import.meta.env.DEV) return window.location.pathname.replace(/\/$/, '') + '/api/mineru'
-  return WORKER_URL
+  return MINERU_BASE
 }
 
 function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -11,38 +13,23 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
   return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer))
 }
 
-async function uploadToSignedUrl(url: string, file: File): Promise<void> {
-  // ~1 second per 100KB, min 30s, max 5 minutes
-  const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
-  const res = await fetchWithTimeout(baseUrl() + '/upload', {
-    method: 'POST',
-    headers: { 'x-upload-url': url },
-    body: file,
-  }, timeoutMs)
-  if (res.status !== 200) {
-    const text = await res.text().catch(() => '')
-    if (text) {
-      try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
-    }
-    throw new Error(`上传失败: HTTP ${res.status}`)
-  }
-}
-
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
-  try {
-    const url = `${baseUrl()}${path}`
-    const headers = { ...(init?.headers as Record<string, string>) }
-    console.log('[mineru] fetch:', url, init?.method ?? 'GET')
-    const resp = await fetch(url, { ...init, headers })
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '')
-      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`)
-    }
-    return resp
-  } catch (e) {
-    console.error('[mineru] error:', e instanceof Error ? e.message : String(e))
-    throw e
+  if (import.meta.env.DEV) {
+    const url = baseUrl() + path
+    return fetch(url, init)
   }
+  // Production: try direct with token, fallback to Worker
+  const url = MINERU_BASE + path
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${TOKEN}`,
+    ...(init?.headers as Record<string, string>),
+  }
+  try {
+    const direct = await fetch(url, { ...init, headers })
+    if (direct.ok) return direct
+  } catch { /* fall through to Worker */ }
+  return fetch(WORKER_URL + path, { ...init, headers })
 }
 
 interface UploadResponse {
@@ -60,7 +47,6 @@ interface BatchResult {
 async function getUploadUrl(filename: string): Promise<{ batchId: string; uploadUrl: string }> {
   const res = await mineruFetch('/api/v4/file-urls/batch', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ files: [{ name: filename, is_ocr: true }], model_version: 'vlm', language: 'ch' }),
   })
   const data: UploadResponse = await res.json()
@@ -68,20 +54,45 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
   return { batchId: data.data.batch_id, uploadUrl: data.data.file_urls[0] }
 }
 
-async function proxyDownload(url: string): Promise<string> {
-  const res = await fetch(baseUrl() + '/download', { headers: { 'x-download-url': url } })
-  if (!res.ok) {
-    const err = await res.text().catch(() => '')
-    throw new Error(`下载结果失败: HTTP ${res.status} ${err}`)
+async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
+  if (import.meta.env.DEV) {
+    const res = await fetch(baseUrl() + '/upload', {
+      method: 'POST', headers: { 'x-upload-url': ossUrl }, body: file,
+    })
+    if (res.status !== 200) throw new Error(`上传失败: HTTP ${res.status}`)
+    return
   }
-  return res.text()
+
+  const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
+  
+  // Try direct OSS PUT first (fast in China, OSS may support CORS)
+  try {
+    const direct = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
+    if (direct.status === 200) return
+  } catch { /* fall through to Worker */ }
+
+  // Worker fallback with cloned body
+  const clone = file.slice(0, file.size, file.type)
+  const res = await fetchWithTimeout(WORKER_URL + '/upload', {
+    method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone,
+  }, timeoutMs)
+  if (res.status !== 200) {
+    const text = await res.text().catch(() => '')
+    if (text) {
+      try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
+    }
+    throw new Error(`上传失败: HTTP ${res.status}`)
+  }
 }
 
-async function downloadMdFromZipUrl(zipUrl: string): Promise<string> {
-  const res = await fetch(baseUrl() + '/download', { headers: { 'x-download-url': zipUrl } })
-  if (!res.ok) throw new Error(`下载 ZIP 失败: HTTP ${res.status}`)
-  const blob = await res.blob()
-  return await extractMdFromZip(blob)
+async function downloadOrProxy(url: string): Promise<Response> {
+  try {
+    const direct = await fetch(url)
+    if (direct.ok) return direct
+  } catch { }
+  const res = await fetch(WORKER_URL + '/download', { headers: { 'x-download-url': url } })
+  if (!res.ok) throw new Error(`下载失败: HTTP ${res.status}`)
+  return res
 }
 
 async function pollBatchResult(batchId: string, onProgress?: (msg: string) => void): Promise<string> {
@@ -95,18 +106,20 @@ async function pollBatchResult(batchId: string, onProgress?: (msg: string) => vo
 
     if (result.state === 'done' && result.full_zip_url) {
       onProgress?.('下载结果中…')
-      // Try direct .md download first (via proxy in dev)
       const mdUrl = result.full_zip_url.replace('.zip', '/full.md')
       try {
-        const md = await proxyDownload(mdUrl)
+        const mdResp = await downloadOrProxy(mdUrl)
+        const md = await mdResp.text()
         if (md && !md.startsWith('<?xml')) return md
-      } catch { /* fall through to ZIP */ }
-      return await downloadMdFromZipUrl(result.full_zip_url)
+      } catch { }
+      const zipResp = await downloadOrProxy(result.full_zip_url)
+      const blob = await zipResp.blob()
+      return await extractMdFromZip(blob)
     }
     if (result.state === 'failed') throw new Error(result.err_msg || 'MinerU 解析失败')
-    onProgress?.(`解析中…（${result.state}）`)
+    onProgress?.(`解析中…(${result.state})`)
   }
-  throw new Error('MinerU 解析超时（3分钟），请重试')
+  throw new Error('解析超时（3分钟），请重试')
 }
 
 async function extractMdFromZip(blob: Blob): Promise<string> {
