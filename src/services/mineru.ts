@@ -2,9 +2,10 @@ const WORKER_URL = 'https://oral-mineru-proxy.oral-mineru.workers.dev'
 const MINERU_BASE = 'https://mineru.net'
 const TOKEN = import.meta.env.VITE_MINERU_API_KEY
 
-function baseUrl(): string {
+function proxyBase(): string {
   if (import.meta.env.DEV) return window.location.pathname.replace(/\/$/, '') + '/api/mineru'
-  return MINERU_BASE
+  if (window.location.hostname.includes('vercel.app')) return '/api/mineru'
+  return WORKER_URL
 }
 
 function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -14,34 +15,30 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
-  if (import.meta.env.DEV) {
-    const url = baseUrl() + path
-    return fetch(url, init)
+  // Same-origin proxy (Vite dev or Vercel): no CORS, no token needed
+  if (import.meta.env.DEV || window.location.hostname.includes('vercel.app')) {
+    return fetch(proxyBase() + path, init)
   }
-  // Production: try direct with token, fallback to Worker
-  const url = MINERU_BASE + path
-  const headers = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${TOKEN}`,
-    ...(init?.headers as Record<string, string>),
-  }
+  // GitHub Pages: try direct with token, fallback to Worker
   try {
-    const direct = await fetch(url, { ...init, headers })
+    const direct = await fetch(MINERU_BASE + path, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) },
+    })
     if (direct.ok) return direct
-  } catch { /* fall through to Worker */ }
-  return fetch(WORKER_URL + path, { ...init, headers })
+  } catch { /* fallback to Worker */ }
+  return fetch(WORKER_URL + path, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) },
+  })
 }
 
 interface UploadResponse {
   code: number; msg: string; data: { batch_id: string; file_urls: string[] }
 }
-
 interface BatchResult {
   code: number; msg: string
-  data: {
-    batch_id: string
-    extract_result: Array<{ file_name: string; state: string; full_zip_url?: string; err_msg?: string }>
-  }
+  data: { batch_id: string; extract_result: Array<{ file_name: string; state: string; full_zip_url?: string; err_msg?: string }> }
 }
 
 async function getUploadUrl(filename: string): Promise<{ batchId: string; uploadUrl: string }> {
@@ -55,44 +52,34 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
 }
 
 async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
-  if (import.meta.env.DEV) {
-    const res = await fetch(baseUrl() + '/upload', {
-      method: 'POST', headers: { 'x-upload-url': ossUrl }, body: file,
-    })
-    if (res.status !== 200) throw new Error(`上传失败: HTTP ${res.status}`)
-    return
-  }
-
   const timeoutMs = Math.min(300000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   
-  // Try direct OSS PUT first (fast in China, OSS may support CORS)
+  // Try direct OSS PUT first (fastest, no proxy size limit)
   try {
     const direct = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
     if (direct.status === 200) return
-  } catch { /* fall through to Worker */ }
-
-  // Worker fallback with cloned body
+  } catch { /* fallback to proxy */ }
+  
+  // Proxy fallback with cloned body
   const clone = file.slice(0, file.size, file.type)
-  const res = await fetchWithTimeout(WORKER_URL + '/upload', {
+  const base = proxyBase()
+  const res = await fetchWithTimeout(base + '/upload', {
     method: 'POST', headers: { 'x-upload-url': ossUrl }, body: clone,
   }, timeoutMs)
   if (res.status !== 200) {
     const text = await res.text().catch(() => '')
-    if (text) {
-      try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
-    }
+    try { const j = JSON.parse(text); throw new Error(j.msg || text.slice(0, 200)) } catch {}
     throw new Error(`上传失败: HTTP ${res.status}`)
   }
 }
 
-async function downloadOrProxy(url: string): Promise<Response> {
+async function downloadFile(url: string): Promise<Response> {
   try {
     const direct = await fetch(url)
     if (direct.ok) return direct
   } catch { }
-  const res = await fetch(WORKER_URL + '/download', { headers: { 'x-download-url': url } })
-  if (!res.ok) throw new Error(`下载失败: HTTP ${res.status}`)
-  return res
+  const base = proxyBase()
+  return fetch(base + '/download', { headers: { 'x-download-url': url } })
 }
 
 async function pollBatchResult(batchId: string, onProgress?: (msg: string) => void): Promise<string> {
@@ -103,16 +90,15 @@ async function pollBatchResult(batchId: string, onProgress?: (msg: string) => vo
     if (data.code !== 0) throw new Error(`MinerU: ${data.msg}`)
     const result = data.data.extract_result[0]
     if (!result) continue
-
     if (result.state === 'done' && result.full_zip_url) {
       onProgress?.('下载结果中…')
       const mdUrl = result.full_zip_url.replace('.zip', '/full.md')
       try {
-        const mdResp = await downloadOrProxy(mdUrl)
+        const mdResp = await downloadFile(mdUrl)
         const md = await mdResp.text()
         if (md && !md.startsWith('<?xml')) return md
       } catch { }
-      const zipResp = await downloadOrProxy(result.full_zip_url)
+      const zipResp = await downloadFile(result.full_zip_url)
       const blob = await zipResp.blob()
       return await extractMdFromZip(blob)
     }
