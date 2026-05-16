@@ -1,6 +1,4 @@
 const WORKER_URL = 'https://oral-mineru-proxy.oral-mineru.workers.dev'
-const MINERU_BASE = 'https://mineru.net'
-const TOKEN = import.meta.env.VITE_MINERU_API_KEY
 const CORS_PROXY = (url: string) => 'https://corsproxy.io/?' + encodeURIComponent(url)
 
 function proxyBase(): string {
@@ -15,28 +13,20 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
   return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer))
 }
 
+// API calls: always through proxy (token never in client code)
 async function mineruFetch(path: string, init?: RequestInit): Promise<Response> {
-  const url = MINERU_BASE + path
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}`, ...(init?.headers as Record<string, string>) }
-  
-  // Same-origin proxy (dev/vercel): no fallback needed
   if (import.meta.env.DEV || window.location.hostname.includes('vercel.app')) {
-    return fetch(proxyBase() + path, init)
+    return fetch(proxyBase() + path, init) // token injected by proxy server-side
   }
-  
-  // GitHub Pages: try multiple paths
-  const attempts = [
-    () => fetch(url, { ...init, headers }),                      // 1. direct mineru.net
-    () => fetch(CORS_PROXY(url), { ...init, headers }),          // 2. corsproxy.io
-    () => fetch(WORKER_URL + path, { ...init, headers }),        // 3. Worker
-  ]
-  
-  for (const attempt of attempts) {
-    try {
-      const resp = await attempt()
-      if (resp.ok) return resp
-    } catch {}
-  }
+  // Production: try Worker first, fallback to corsproxy.io for API
+  try {
+    const r = await fetch(WORKER_URL + path, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers as Record<string, string>) } })
+    if (r.ok) return r
+  } catch {}
+  try {
+    const r = await fetch(CORS_PROXY('https://mineru.net' + path), { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers as Record<string, string>) } })
+    if (r.ok) return r
+  } catch {}
   throw new Error('无法连接 MinerU 服务，请检查网络后重试')
 }
 
@@ -61,7 +51,7 @@ async function getUploadUrl(filename: string): Promise<{ batchId: string; upload
 async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
   const timeoutMs = Math.min(120000, Math.max(30000, Math.ceil(file.size / 102400) * 1000))
   
-  // 1. Direct OSS PUT (fast, may need CORS)
+  // 1. Direct OSS PUT
   try {
     const r = await fetchWithTimeout(ossUrl, { method: 'PUT', body: file }, timeoutMs)
     if (r.status === 200) return
@@ -81,7 +71,6 @@ async function uploadToSignedUrl(ossUrl: string, file: File): Promise<void> {
 }
 
 async function downloadFile(url: string): Promise<Response> {
-  // Try: direct → corsproxy → Worker proxy
   try { const r = await fetch(url); if (r.ok) return r } catch {}
   try { const r = await fetch(CORS_PROXY(url)); if (r.ok) return r } catch {}
   const base = proxyBase()
@@ -103,7 +92,7 @@ async function pollBatchResult(batchId: string, onProgress?: (msg: string) => vo
         const mdResp = await downloadFile(mdUrl)
         const md = await mdResp.text()
         if (md && !md.startsWith('<?xml')) return md
-      } catch { }
+      } catch {}
       const zipResp = await downloadFile(result.full_zip_url)
       const blob = await zipResp.blob()
       return await extractMdFromZip(blob)
